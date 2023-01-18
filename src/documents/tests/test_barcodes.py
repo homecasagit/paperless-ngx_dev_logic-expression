@@ -362,6 +362,28 @@ class TestBarcode(DirectoriesMixin, TestCase):
         self.assertEqual(pdf_file, test_file)
         self.assertListEqual(separator_page_numbers, [])
 
+    @override_settings(CONSUMER_BARCODE_STRING="ADAR-NEXTDOC")
+    def test_scan_file_for_separating_qr_barcodes(self):
+        """
+        GIVEN:
+            - Input PDF with certain QR codes that aren't detected at current size
+        WHEN:
+            - The input file is scanned for barcodes
+        THEN:
+            - QR codes are detected
+        """
+        test_file = os.path.join(
+            self.BARCODE_SAMPLE_DIR,
+            "many-qr-codes.pdf",
+        )
+
+        pdf_file, separator_page_numbers = barcodes.scan_file_for_separating_barcodes(
+            test_file,
+        )
+
+        self.assertEqual(pdf_file, test_file)
+        self.assertListEqual(separator_page_numbers, [1])
+
     def test_separate_pages(self):
         test_file = os.path.join(
             self.BARCODE_SAMPLE_DIR,

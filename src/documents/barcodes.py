@@ -3,6 +3,7 @@ import os
 import shutil
 import tempfile
 from functools import lru_cache
+from math import ceil
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -131,6 +132,24 @@ def scan_file_for_separating_barcodes(filepath: str) -> Tuple[Optional[str], Lis
                     # is what pyzbar expects to receive, so this may
                     # raise an exception, triggering fallback
                     pillow_img = pdfimage.as_pil_image()
+
+                    # Scale the image down
+                    # See: https://github.com/paperless-ngx/paperless-ngx/issues/2385
+                    # TLDR: zbar has issues with larger images
+                    width, height = pillow_img.size
+                    if width > 512:
+                        scaler = ceil(width / 512)
+                        new_width = int(width / scaler)
+                        new_height = int(height / scaler)
+                        pillow_img = pillow_img.resize((new_width, new_height))
+
+                    width, height = pillow_img.size
+
+                    if height > 1024:
+                        scaler = ceil(height / 1024)
+                        new_width = int(width / scaler)
+                        new_height = int(height / scaler)
+                        pillow_img = pillow_img.resize((new_width, new_height))
 
                     detected_barcodes = barcode_reader(pillow_img)
 
