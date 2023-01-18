@@ -3,10 +3,9 @@ import logging
 import os
 import shutil
 import uuid
-from pathlib import Path
+from typing import Dict
 from typing import Type
 
-import dateutil.parser
 import tqdm
 from asgiref.sync import async_to_sync
 from celery import shared_task
@@ -19,6 +18,7 @@ from documents import index
 from documents import sanity_checker
 from documents.classifier import DocumentClassifier
 from documents.classifier import load_classifier
+from documents.consumer import ConsumeDocument
 from documents.consumer import Consumer
 from documents.consumer import ConsumerError
 from documents.file_handling import create_source_path_directory
@@ -87,36 +87,21 @@ def train_classifier():
 
 @shared_task
 def consume_file(
-    path,
-    override_filename=None,
-    override_title=None,
-    override_correspondent_id=None,
-    override_document_type_id=None,
-    override_tag_ids=None,
-    task_id=None,
-    override_created=None,
+    file_info: Dict,
 ):
 
-    path = Path(path).resolve()
-
-    # Celery converts this to a string, but everything expects a datetime
-    # Long term solution is to not use JSON for the serializer but pickle instead
-    # TODO: This will be resolved in kombu 5.3, expected with celery 5.3
-    # More types will be retained through JSON encode/decode
-    if override_created is not None and isinstance(override_created, str):
-        try:
-            override_created = dateutil.parser.isoparse(override_created)
-        except Exception:
-            pass
+    incoming_file: ConsumeDocument = ConsumeDocument.from_dict(file_info)
 
     # check for separators in current document
     if settings.CONSUMER_ENABLE_BARCODES:
 
-        pdf_filepath, separators = barcodes.scan_file_for_separating_barcodes(path)
+        pdf_filepath, separators = barcodes.scan_file_for_separating_barcodes(
+            incoming_file.path,
+        )
 
         if separators:
             logger.debug(
-                f"Pages with separators found in: {str(path)}",
+                f"Pages with separators found in: {incoming_file.path}",
             )
             document_list = barcodes.separate_pages(pdf_filepath, separators)
 
@@ -124,8 +109,8 @@ def consume_file(
                 for n, document in enumerate(document_list):
                     # save to consumption dir
                     # rename it to the original filename  with number prefix
-                    if override_filename:
-                        newname = f"{str(n)}_" + override_filename
+                    if incoming_file.overrides.filename:
+                        newname = f"{str(n)}_" + incoming_file.overrides.filename
                     else:
                         newname = None
 
@@ -135,10 +120,10 @@ def consume_file(
                     # from subdirectories
                     try:
                         # is_relative_to would be nicer, but new in 3.9
-                        _ = path.relative_to(settings.SCRATCH_DIR)
+                        _ = incoming_file.path.relative_to(settings.SCRATCH_DIR)
                         save_to_dir = settings.CONSUMPTION_DIR
                     except ValueError:
-                        save_to_dir = path.parent
+                        save_to_dir = incoming_file.path.parent
 
                     barcodes.save_to_dir(
                         document,
@@ -150,15 +135,16 @@ def consume_file(
                 os.remove(pdf_filepath)
 
                 # If the original was a TIFF, remove the original file as well
-                if str(pdf_filepath) != str(path):
-                    logger.debug(f"Deleting file {path}")
-                    os.unlink(path)
+                if str(pdf_filepath) != str(incoming_file.path):
+                    logger.debug(f"Deleting file {incoming_file.path}")
+                    incoming_file.path.unlink()
 
                 # notify the sender, otherwise the progress bar
                 # in the UI stays stuck
                 payload = {
-                    "filename": override_filename,
-                    "task_id": task_id,
+                    "filename": incoming_file.overrides.filename
+                    or incoming_file.path.name,
+                    "task_id": "",
                     "current_progress": 100,
                     "max_progress": 100,
                     "status": "SUCCESS",
@@ -176,16 +162,7 @@ def consume_file(
                 return "File successfully split"
 
     # continue with consumption if no barcode was found
-    document = Consumer().try_consume_file(
-        path,
-        override_filename=override_filename,
-        override_title=override_title,
-        override_correspondent_id=override_correspondent_id,
-        override_document_type_id=override_document_type_id,
-        override_tag_ids=override_tag_ids,
-        task_id=task_id,
-        override_created=override_created,
-    )
+    document = Consumer(incoming_file).try_consume_file()
 
     if document:
         return f"Success. New document id {document.pk} created"

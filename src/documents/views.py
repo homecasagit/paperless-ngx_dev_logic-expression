@@ -4,7 +4,6 @@ import logging
 import os
 import tempfile
 import urllib
-import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +57,7 @@ from .bulk_download import ArchiveOnlyStrategy
 from .bulk_download import OriginalAndArchiveStrategy
 from .bulk_download import OriginalsOnlyStrategy
 from .classifier import load_classifier
+from .consumer import ConsumeDocument
 from .filters import CorrespondentFilterSet
 from .filters import DocumentFilterSet
 from .filters import DocumentTypeFilterSet
@@ -633,18 +633,14 @@ class PostDocumentView(GenericAPIView):
 
         os.utime(temp_file_path, times=(t, t))
 
-        task_id = str(uuid.uuid4())
+        incoming_doc = ConsumeDocument(temp_file_path)
+        incoming_doc.overrides.title = title
+        incoming_doc.overrides.correspondent_id = correspondent_id
+        incoming_doc.overrides.document_type_id = document_type_id
+        incoming_doc.overrides.tag_ids = tag_ids
+        incoming_doc.overrides.created = created
 
-        async_task = consume_file.delay(
-            # Paths are not JSON friendly
-            str(temp_file_path),
-            override_title=title,
-            override_correspondent_id=correspondent_id,
-            override_document_type_id=document_type_id,
-            override_tag_ids=tag_ids,
-            task_id=task_id,
-            override_created=created,
-        )
+        async_task = consume_file.delay(incoming_doc.as_dict())
 
         return Response(async_task.id)
 

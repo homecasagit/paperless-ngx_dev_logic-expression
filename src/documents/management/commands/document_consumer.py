@@ -11,6 +11,7 @@ from typing import Final
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.core.management.base import CommandError
+from documents.consumer import ConsumeDocument
 from documents.models import Tag
 from documents.parsers import is_file_ext_supported
 from documents.tasks import consume_file
@@ -83,6 +84,8 @@ def _consume(filepath):
         logger.warning(f"Not consuming file {filepath}: OS reports {os_error_str}")
         return
 
+    doc = ConsumeDocument(Path(filepath))
+
     tag_ids = None
     try:
         if settings.CONSUMER_SUBDIRS_AS_TAGS:
@@ -90,11 +93,12 @@ def _consume(filepath):
     except Exception:
         logger.exception("Error creating tags from path")
 
+    doc.overrides.tag_ids = tag_ids
+
     try:
         logger.info(f"Adding {filepath} to the task queue.")
         consume_file.delay(
-            filepath,
-            override_tag_ids=list(tag_ids) if tag_ids else None,
+            doc.as_dict(),
         )
     except Exception:
         # Catch all so that the consumer won't crash.

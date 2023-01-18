@@ -1,12 +1,17 @@
+import dataclasses
 import datetime
 import hashlib
 import os
 import uuid
+from pathlib import Path
 from subprocess import CompletedProcess
 from subprocess import run
+from typing import Dict
+from typing import List
 from typing import Optional
 from typing import Type
 
+import dateutil
 import magic
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -33,11 +38,6 @@ from .parsers import ParseError
 from .signals import document_consumption_finished
 from .signals import document_consumption_started
 
-
-class ConsumerError(Exception):
-    pass
-
-
 MESSAGE_DOCUMENT_ALREADY_EXISTS = "document_already_exists"
 MESSAGE_FILE_NOT_FOUND = "file_not_found"
 MESSAGE_PRE_CONSUME_SCRIPT_NOT_FOUND = "pre_consume_script_not_found"
@@ -53,6 +53,71 @@ MESSAGE_SAVE_DOCUMENT = "save_document"
 MESSAGE_FINISHED = "finished"
 
 
+@dataclasses.dataclass
+class DocumentOverrides:
+    filename: Optional[str] = None
+    title: Optional[str] = None
+    correspondent_id: Optional[int] = None
+    document_type_id: Optional[int] = None
+    tag_ids: Optional[List[int]] = None
+    created: Optional[datetime.datetime] = None
+
+    def as_dict(self) -> Dict:
+        return {
+            "filename": self.filename,
+            "title": self.title,
+            "correspondent_id": self.correspondent_id,
+            "document_type_id": self.document_type_id,
+            "tag_ids": self.tag_ids,
+            "created": self.created.isoformat() if self.created else None,
+        }
+
+    @classmethod
+    def from_dict(data: Dict) -> "DocumentOverrides":
+        return DocumentOverrides(
+            data["filename"],
+            data["title"],
+            data["correspondent_id"],
+            data["document_type_id"],
+            data["tag_ids"],
+            dateutil.parser.isoparse(data["created"]) if data["created"] else None,
+        )
+
+
+@dataclasses.dataclass
+class ConsumeDocument:
+    path: Path
+    mime_type: str = dataclasses.field(init=False)
+    overrides: DocumentOverrides = dataclasses.field(default_factory=DocumentOverrides)
+
+    def __post_init__(self):
+        # Always fully qualify the path first thing
+        self.path = self.path.resolve()
+
+        # Get the file type once at init
+        self.mime_type = magic.from_file(self.path)
+
+    @property
+    def checksum(self) -> str:
+        return hashlib.md5(self.path.read_bytes()).hexdigest()
+
+    def as_dict(self) -> Dict:
+        return {
+            "path": str(self.path),
+            "overrides": self.overrides.as_dict(),
+        }
+
+    @classmethod
+    def from_dict(data: Dict) -> "ConsumeDocument":
+        doc = ConsumeDocument(data["path"])
+        doc.overrides = DocumentOverrides.from_dict(data["overrides"])
+        return doc
+
+
+class ConsumerError(Exception):
+    pass
+
+
 class Consumer(LoggingMixin):
 
     logging_name = "paperless.consumer"
@@ -66,7 +131,7 @@ class Consumer(LoggingMixin):
         document_id=None,
     ):
         payload = {
-            "filename": os.path.basename(self.filename) if self.filename else None,
+            "filename": self.file_in_work.path.name,
             "task_id": self.task_id,
             "current_progress": current_progress,
             "max_progress": max_progress,
@@ -88,39 +153,34 @@ class Consumer(LoggingMixin):
     ):
         self._send_progress(100, 100, "FAILED", message)
         self.log("error", log_message or message, exc_info=exc_info)
-        raise ConsumerError(f"{self.filename}: {log_message or message}") from exception
+        raise ConsumerError(
+            f"{self.file_in_work.path.name}: {log_message or message}",
+        ) from exception
 
-    def __init__(self):
+    def __init__(self, file: ConsumeDocument):
         super().__init__()
-        self.path = None
-        self.filename = None
-        self.override_title = None
-        self.override_correspondent_id = None
-        self.override_tag_ids = None
-        self.override_document_type_id = None
-        self.task_id = None
-
+        self.file_in_work = file
+        self.task_id = str(uuid.uuid4())
         self.channel_layer = get_channel_layer()
 
     def pre_check_file_exists(self):
-        if not os.path.isfile(self.path):
+        if not self.file_in_work.path.exists():
             self._fail(
                 MESSAGE_FILE_NOT_FOUND,
-                f"Cannot consume {self.path}: File not found.",
+                f"Cannot consume {self.file_in_work.path}: File not found.",
             )
 
     def pre_check_duplicate(self):
-        with open(self.path, "rb") as f:
-            checksum = hashlib.md5(f.read()).hexdigest()
+        checksum = self.file_in_work.checksum
         existing_doc = Document.objects.filter(
             Q(checksum=checksum) | Q(archive_checksum=checksum),
         )
         if existing_doc.exists():
             if settings.CONSUMER_DELETE_DUPLICATES:
-                os.unlink(self.path)
+                os.unlink(self.file_in_work.path)
             self._fail(
                 MESSAGE_DOCUMENT_ALREADY_EXISTS,
-                f"Not consuming {self.filename}: It is a duplicate of"
+                f"Not consuming {self.file_in_work.path.name}: It is a duplicate of"
                 f" {existing_doc.get().title} (#{existing_doc.get().pk})",
             )
 
@@ -143,7 +203,7 @@ class Consumer(LoggingMixin):
 
         self.log("info", f"Executing pre-consume script {settings.PRE_CONSUME_SCRIPT}")
 
-        filepath_arg = os.path.normpath(self.path)
+        filepath_arg = str(self.file_in_work.path)
 
         script_env = os.environ.copy()
         script_env["DOCUMENT_SOURCE_PATH"] = filepath_arg
@@ -247,28 +307,10 @@ class Consumer(LoggingMixin):
 
     def try_consume_file(
         self,
-        path,
-        override_filename=None,
-        override_title=None,
-        override_correspondent_id=None,
-        override_document_type_id=None,
-        override_tag_ids=None,
-        task_id=None,
-        override_created=None,
     ) -> Document:
         """
         Return the document object if it was successfully created.
         """
-
-        self.path = path
-        self.filename = override_filename or os.path.basename(path)
-        self.override_title = override_title
-        self.override_correspondent_id = override_correspondent_id
-        self.override_document_type_id = override_document_type_id
-        self.override_tag_ids = override_tag_ids
-        self.task_id = task_id or str(uuid.uuid4())
-        self.override_created = override_created
-
         self._send_progress(0, 100, "STARTING", MESSAGE_NEW_FILE)
 
         # this is for grouping logging entries for this particular file
@@ -282,26 +324,26 @@ class Consumer(LoggingMixin):
         self.pre_check_directories()
         self.pre_check_duplicate()
 
-        self.log("info", f"Consuming {self.filename}")
+        self.log("info", f"Consuming {self.file_in_work.path.name}")
 
         # Determine the parser class.
-
-        mime_type = magic.from_file(self.path, mime=True)
-
-        self.log("debug", f"Detected mime type: {mime_type}")
+        self.log("debug", f"Detected mime type: {self.file_in_work.mime_type}")
 
         # Based on the mime type, get the parser for that type
         parser_class: Optional[Type[DocumentParser]] = get_parser_class_for_mime_type(
-            mime_type,
+            self.file_in_work.mime_type,
         )
         if not parser_class:
-            self._fail(MESSAGE_UNSUPPORTED_TYPE, f"Unsupported mime type {mime_type}")
+            self._fail(
+                MESSAGE_UNSUPPORTED_TYPE,
+                f"Unsupported mime type {self.file_in_work.mime_type}",
+            )
 
         # Notify all listeners that we're going to do some work.
 
         document_consumption_started.send(
             sender=self.__class__,
-            filename=self.path,
+            filename=self.file_in_work.path,
             logging_group=self.logging_group,
         )
 
@@ -333,29 +375,36 @@ class Consumer(LoggingMixin):
 
         try:
             self._send_progress(20, 100, "WORKING", MESSAGE_PARSING_DOCUMENT)
-            self.log("debug", f"Parsing {self.filename}...")
-            document_parser.parse(self.path, mime_type, self.filename)
+            self.log("debug", f"Parsing {self.file_in_work.path.name}...")
+            document_parser.parse(
+                self.file_in_work.path,
+                self.file_in_work.mime_type,
+                self.file_in_work.path.name,
+            )
 
-            self.log("debug", f"Generating thumbnail for {self.filename}...")
+            self.log(
+                "debug",
+                f"Generating thumbnail for {self.file_in_work.path.name}...",
+            )
             self._send_progress(70, 100, "WORKING", MESSAGE_GENERATING_THUMBNAIL)
             thumbnail = document_parser.get_thumbnail(
-                self.path,
-                mime_type,
-                self.filename,
+                self.file_in_work.path,
+                self.file_in_work.mime_type,
+                self.file_in_work.path.name,
             )
 
             text = document_parser.get_text()
             date = document_parser.get_date()
             if date is None:
                 self._send_progress(90, 100, "WORKING", MESSAGE_PARSE_DATE)
-                date = parse_date(self.filename, text)
+                date = parse_date(self.file_in_work.path.name, text)
             archive_path = document_parser.get_archive_path()
 
         except ParseError as e:
             document_parser.cleanup()
             self._fail(
                 str(e),
-                f"Error while consuming document {self.filename}: {e}",
+                f"Error while consuming document {self.file_in_work.path.name}: {e}",
                 exc_info=True,
                 exception=e,
             )
@@ -375,7 +424,11 @@ class Consumer(LoggingMixin):
             with transaction.atomic():
 
                 # store the document.
-                document = self._store(text=text, date=date, mime_type=mime_type)
+                document = self._store(
+                    text=text,
+                    date=date,
+                    mime_type=self.file_in_work.mime_type,
+                )
 
                 # If we get here, it was successful. Proceed with post-consume
                 # hooks. If they fail, nothing will get changed.
@@ -393,7 +446,11 @@ class Consumer(LoggingMixin):
                     document.filename = generate_unique_filename(document)
                     create_source_path_directory(document.source_path)
 
-                    self._write(document.storage_type, self.path, document.source_path)
+                    self._write(
+                        document.storage_type,
+                        self.file_in_work.path,
+                        document.source_path,
+                    )
 
                     self._write(
                         document.storage_type,
@@ -424,13 +481,13 @@ class Consumer(LoggingMixin):
                 document.save()
 
                 # Delete the file only if it was successfully consumed
-                self.log("debug", f"Deleting file {self.path}")
-                os.unlink(self.path)
+                self.log("debug", f"Deleting file {self.file_in_work.path}")
+                os.unlink(self.file_in_work.path)
 
                 # https://github.com/jonaswinkler/paperless-ng/discussions/1037
                 shadow_file = os.path.join(
-                    os.path.dirname(self.path),
-                    "._" + os.path.basename(self.path),
+                    os.path.dirname(self.file_in_work.path),
+                    "._" + os.path.basename(self.file_in_work.path),
                 )
 
                 if os.path.isfile(shadow_file):
@@ -441,7 +498,7 @@ class Consumer(LoggingMixin):
             self._fail(
                 str(e),
                 f"The following error occurred while consuming "
-                f"{self.filename}: {e}",
+                f"{self.file_in_work.path.name}: {e}",
                 exc_info=True,
                 exception=e,
             )
@@ -468,12 +525,12 @@ class Consumer(LoggingMixin):
 
         # If someone gave us the original filename, use it instead of doc.
 
-        file_info = FileInfo.from_filename(self.filename)
+        file_info = FileInfo.from_filename(self.file_in_work.path.name)
 
         self.log("debug", "Saving record to database")
 
-        if self.override_created is not None:
-            create_date = self.override_created
+        if self.file_in_work.overrides.created is not None:
+            create_date = self.file_in_work.overrides.created
             self.log(
                 "debug",
                 f"Creation date from post_documents parameter: {create_date}",
@@ -485,7 +542,7 @@ class Consumer(LoggingMixin):
             create_date = date
             self.log("debug", f"Creation date from parse_date: {create_date}")
         else:
-            stats = os.stat(self.path)
+            stats = os.stat(self.file_in_work.path)
             create_date = timezone.make_aware(
                 datetime.datetime.fromtimestamp(stats.st_mtime),
             )
@@ -493,16 +550,16 @@ class Consumer(LoggingMixin):
 
         storage_type = Document.STORAGE_TYPE_UNENCRYPTED
 
-        with open(self.path, "rb") as f:
+        with open(self.file_in_work.path, "rb") as f:
             document = Document.objects.create(
-                title=(self.override_title or file_info.title)[:127],
+                title=(self.file_in_work.overrides.title or file_info.title)[:127],
                 content=text,
                 mime_type=mime_type,
                 checksum=hashlib.md5(f.read()).hexdigest(),
                 created=create_date,
                 modified=create_date,
                 storage_type=storage_type,
-                original_filename=self.filename,
+                original_filename=self.file_in_work.path.name,
             )
 
         self.apply_overrides(document)
@@ -512,18 +569,18 @@ class Consumer(LoggingMixin):
         return document
 
     def apply_overrides(self, document):
-        if self.override_correspondent_id:
+        if self.file_in_work.overrides.correspondent_id:
             document.correspondent = Correspondent.objects.get(
-                pk=self.override_correspondent_id,
+                pk=self.file_in_work.overrides.correspondent_id,
             )
 
-        if self.override_document_type_id:
+        if self.file_in_work.overrides.document_type_id:
             document.document_type = DocumentType.objects.get(
-                pk=self.override_document_type_id,
+                pk=self.file_in_work.overrides.document_type_id,
             )
 
-        if self.override_tag_ids:
-            for tag_id in self.override_tag_ids:
+        if self.file_in_work.overrides.tag_ids:
+            for tag_id in self.file_in_work.overrides.tag_ids:
                 document.tags.add(Tag.objects.get(pk=tag_id))
 
     def _write(self, storage_type, source, target):
