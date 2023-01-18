@@ -6,6 +6,7 @@ export const MATCH_LITERAL = 3
 export const MATCH_REGEX = 4
 export const MATCH_FUZZY = 5
 export const MATCH_AUTO = 6
+export const MATCH_COMPLEX = 7
 export const DEFAULT_MATCHING_ALGORITHM = MATCH_AUTO
 
 export const MATCHING_ALGORITHMS = [
@@ -38,6 +39,11 @@ export const MATCHING_ALGORITHMS = [
     id: MATCH_AUTO,
     shortName: $localize`Automatic`,
     name: $localize`Auto: Learn matching automatically`,
+  },
+  {
+    id: MATCH_COMPLEX,
+    shortName: $localize`Logic Expression`,
+    name: $localize`Match by logic expression, e.g. (A|B)&!C`,
   },
 ]
 

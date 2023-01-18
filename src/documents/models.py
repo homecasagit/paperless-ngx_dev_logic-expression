@@ -27,6 +27,7 @@ class MatchingModel(models.Model):
     MATCH_REGEX = 4
     MATCH_FUZZY = 5
     MATCH_AUTO = 6
+    MATCH_COMPLEX = 7
 
     MATCHING_ALGORITHMS = (
         (MATCH_ANY, _("Any word")),
@@ -35,6 +36,7 @@ class MatchingModel(models.Model):
         (MATCH_REGEX, _("Regular expression")),
         (MATCH_FUZZY, _("Fuzzy word")),
         (MATCH_AUTO, _("Automatic")),
+        (MATCH_COMPLEX, _("Logic Espression")),
     )
 
     name = models.CharField(_("name"), max_length=128, unique=True)

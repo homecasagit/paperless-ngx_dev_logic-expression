@@ -1,6 +1,7 @@
 import logging
 import re
 
+from documents.match_complex import complex_match
 from documents.models import Correspondent
 from documents.models import DocumentType
 from documents.models import MatchingModel
@@ -164,6 +165,27 @@ def matches(matching_model, document):
     elif matching_model.matching_algorithm == MatchingModel.MATCH_AUTO:
         # this is done elsewhere.
         return False
+
+    elif matching_model.matching_algorithm == MatchingModel.MATCH_COMPLEX:
+
+        if matching_model.is_insensitive:
+            document_content = document_content.lower()
+            matching_model.match = matching_model.match.lower()
+
+        try:
+            match = complex_match(document_content, matching_model.match)
+        except complex_match.error:
+            logger.error(
+                f"Error while processing complex match: {matching_model.match}",
+            )
+            return False
+        if match:
+            log_reason(
+                matching_model,
+                document,
+                "complex match successfully matched the string with the document",
+            )
+        return bool(match)
 
     else:
         raise NotImplementedError("Unsupported matching algorithm")
