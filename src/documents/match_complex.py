@@ -39,13 +39,8 @@ def syntax_checker(query: str) -> bool:
         )
         return False
 
-    # check syntax (not two or more & or | combined)
-    # Idea: instead of checking only, we could replace it with
-    # a single charakter and return the corrected query
-    regex_OR = r"\|\|+"  # find two or more "|"
-    regex_AND = r"&&+"  # find two or more "&"
-    if re.findall(regex_OR, query) or re.findall(regex_AND, query):
-        return False
+    # Double "&&" or "||" are solved directly now.
+    # Other checks may be placed here.
     return True
 
 
@@ -57,7 +52,7 @@ def remove_unwanted_brackets(string: str) -> str:
     return string
 
 
-def regex_query_remove(regex: str, querystring: str) -> str:
+def regex_query_replace(regex: str, querystring: str, replstring: str) -> str:
     matches = re.finditer(regex, querystring)
     position_correction = (
         0  # we have to correct the position of the matches after each item
@@ -66,27 +61,13 @@ def regex_query_remove(regex: str, querystring: str) -> str:
         # remove spaces from querystring at corrected position
         querystring = (
             querystring[: item.start() + position_correction]
+            + replstring
             + querystring[item.end() + position_correction :]
         )
         # adjust the correction factor (add the quantity of removed spaces to it)
-        position_correction = position_correction - (item.end() - item.start())
-    return querystring
-
-
-def regex_query_replace(regex: str, querystring: str) -> str:
-    matches = re.finditer(regex, querystring)
-    position_correction = (
-        0  # we have to correct the position of the matches after each item
-    )
-    for item in matches:
-        # remove spaces from querystring at corrected position
-        querystring = (
-            querystring[: item.start() + position_correction]
-            + "&"
-            + querystring[item.end() + position_correction :]
+        position_correction = (
+            position_correction - (item.end() - item.start()) + len(replstring)
         )
-        # adjust the correction factor (add the quantity of removed spaces to it)
-        position_correction = position_correction - (item.end() - item.start()) + 1
     return querystring
 
 
@@ -105,6 +86,10 @@ def complex_match(sourcetext: str, querystring: str) -> bool:
     regex_special_connections = r"(?<=[^(|&! ]) *(?=[!\(])"
     # will be connected with AND, also removes spaces:
     regex_text_after_closingBracket = r"(?<=[\)]) *(?=[^())|&! ])"
+    # find two or more "|", replace with single and remove spaces:
+    regex_OR = r" *\|+ *"
+    # find two or more "&", replace with single and remove spaces:
+    regex_AND = r" *&+ *"
 
     # clean the query string so it does not fail
     # could be realized in a seperate function
@@ -119,11 +104,15 @@ def complex_match(sourcetext: str, querystring: str) -> bool:
     logger.debug("Query before cleanup: " + querystring)
 
     # clean spaces:
-    querystring = regex_query_remove(regex_clean_spaces, querystring)
+    querystring = regex_query_replace(regex_clean_spaces, querystring, "")
     # use the special connections:
-    querystring = regex_query_replace(regex_special_connections, querystring)
+    querystring = regex_query_replace(regex_special_connections, querystring, "&")
     # connect closing brackets that are directly followed by text:
-    querystring = regex_query_replace(regex_text_after_closingBracket, querystring)
+    querystring = regex_query_replace(regex_text_after_closingBracket, querystring, "&")
+    # one or more "|", also remove spaces
+    querystring = regex_query_replace(regex_OR, querystring, "|")
+    # one or more "&", also remove spaces
+    querystring = regex_query_replace(regex_AND, querystring, "&")
     # remove brackets that are opened and closed again immediately
     querystring = remove_unwanted_brackets(querystring)
 
@@ -180,8 +169,10 @@ def complex_match(sourcetext: str, querystring: str) -> bool:
             "Something went wrong. .eval() is unsafe to use, "
             "will skip evaluation and return False",
         )
-        return False
-    # evaluates the query if it is safe to use
-    return eval(
-        querystring,
-    )
+        result = False
+    else:
+        # evaluates the query if it is safe to use
+        result = eval(querystring)
+
+    logger.debug(f"Result: {result}")
+    return result
