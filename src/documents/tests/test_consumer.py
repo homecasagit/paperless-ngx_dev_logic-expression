@@ -19,7 +19,7 @@ from django.utils import timezone
 from django.test import override_settings
 from django.test import TestCase
 
-from ..consumer import Consumer
+from ..consumer import Consumer, ConsumeDocument
 from ..consumer import ConsumerError
 from ..models import Correspondent
 from ..models import Document
@@ -270,7 +270,7 @@ class TestConsumer(DirectoriesMixin, TestCase):
         return DummyParser(
             logging_group,
             self.dirs.scratch_dir,
-            self.get_test_archive_file(),
+            self.get_test_archive_file().path,
         )
 
     def make_faulty_parser(self, logging_group, progress_callback=None):
@@ -298,8 +298,6 @@ class TestConsumer(DirectoriesMixin, TestCase):
         self._send_progress = patcher.start()
         self.addCleanup(patcher.stop)
 
-        self.consumer = Consumer()
-
     def get_test_file(self):
         src = os.path.join(
             os.path.dirname(__file__),
@@ -310,7 +308,7 @@ class TestConsumer(DirectoriesMixin, TestCase):
         )
         dst = os.path.join(self.dirs.scratch_dir, "sample.pdf")
         shutil.copy(src, dst)
-        return dst
+        return ConsumeDocument(dst)
 
     def get_test_archive_file(self):
         src = os.path.join(
@@ -322,7 +320,7 @@ class TestConsumer(DirectoriesMixin, TestCase):
         )
         dst = os.path.join(self.dirs.scratch_dir, "sample_archive.pdf")
         shutil.copy(src, dst)
-        return dst
+        return ConsumeDocument(dst)
 
     @override_settings(FILENAME_FORMAT=None, TIME_ZONE="America/Chicago")
     def testNormalOperation(self):
@@ -334,12 +332,12 @@ class TestConsumer(DirectoriesMixin, TestCase):
         rough_create_date_local = timezone.localtime(timezone.now())
 
         # Consume the file
-        document = self.consumer.try_consume_file(filename)
+        document = Consumer(filename).try_consume_file()
 
         self.assertEqual(document.content, "The Text")
         self.assertEqual(
             document.title,
-            os.path.splitext(os.path.basename(filename))[0],
+            os.path.splitext(os.path.basename(filename.name))[0],
         )
         self.assertIsNone(document.correspondent)
         self.assertIsNone(document.document_type)
@@ -355,7 +353,7 @@ class TestConsumer(DirectoriesMixin, TestCase):
         self.assertEqual(document.checksum, "42995833e01aea9b3edee44bbfdd7ce1")
         self.assertEqual(document.archive_checksum, "62acb0bcbfbcaa62ca6ad3668e4e404b")
 
-        self.assertFalse(os.path.isfile(filename))
+        self.assertFalse(os.path.isfile(filename.path))
 
         self._assert_first_last_send_progress()
 
@@ -381,24 +379,23 @@ class TestConsumer(DirectoriesMixin, TestCase):
         filename = self.get_test_file()
         shadow_file = os.path.join(self.dirs.scratch_dir, "._sample.pdf")
 
-        shutil.copy(filename, shadow_file)
+        shutil.copy(filename.path, shadow_file)
 
         self.assertTrue(os.path.isfile(shadow_file))
 
-        document = self.consumer.try_consume_file(filename)
+        document = Consumer(filename).try_consume_file()
 
         self.assertTrue(os.path.isfile(document.source_path))
 
         self.assertFalse(os.path.isfile(shadow_file))
-        self.assertFalse(os.path.isfile(filename))
+        self.assertFalse(os.path.isfile(filename.path))
 
     def testOverrideFilename(self):
         filename = self.get_test_file()
-        override_filename = "Statement for November.pdf"
+        filename.overrides.filename = "Statement for November.pdf"
 
         document = self.consumer.try_consume_file(
             filename,
-            override_filename=override_filename,
         )
 
         self.assertEqual(document.title, "Statement for November")
@@ -406,30 +403,34 @@ class TestConsumer(DirectoriesMixin, TestCase):
         self._assert_first_last_send_progress()
 
     def testOverrideTitle(self):
-        document = self.consumer.try_consume_file(
-            self.get_test_file(),
-            override_title="Override Title",
-        )
-        self.assertEqual(document.title, "Override Title")
+        filename = self.get_test_file()
+        override_title = "Override Title"
+        filename.overrides.title = override_title
+
+        document = Consumer(filename).try_consume_file()
+
+        self.assertEqual(document.title, override_title)
         self._assert_first_last_send_progress()
 
     def testOverrideCorrespondent(self):
         c = Correspondent.objects.create(name="test")
 
-        document = self.consumer.try_consume_file(
-            self.get_test_file(),
-            override_correspondent_id=c.pk,
-        )
+        filename = self.get_test_file()
+        filename.overrides.correspondent_id = c.pk
+
+        document = Consumer(filename).try_consume_file()
+
         self.assertEqual(document.correspondent.id, c.id)
         self._assert_first_last_send_progress()
 
     def testOverrideDocumentType(self):
         dt = DocumentType.objects.create(name="test")
 
-        document = self.consumer.try_consume_file(
-            self.get_test_file(),
-            override_document_type_id=dt.pk,
-        )
+        filename = self.get_test_file()
+        filename.overrides.document_type_id = dt.pk
+
+        document = Consumer(filename).try_consume_file()
+
         self.assertEqual(document.document_type.id, dt.id)
         self._assert_first_last_send_progress()
 
@@ -437,10 +438,11 @@ class TestConsumer(DirectoriesMixin, TestCase):
         t1 = Tag.objects.create(name="t1")
         t2 = Tag.objects.create(name="t2")
         t3 = Tag.objects.create(name="t3")
-        document = self.consumer.try_consume_file(
-            self.get_test_file(),
-            override_tag_ids=[t1.id, t3.id],
-        )
+
+        filename = self.get_test_file()
+        filename.overrides.tag_ids = [t1.id, t3.id]
+
+        document = Consumer(filename).try_consume_file()
 
         self.assertIn(t1, document.tags.all())
         self.assertNotIn(t2, document.tags.all())
@@ -449,53 +451,42 @@ class TestConsumer(DirectoriesMixin, TestCase):
 
     def testNotAFile(self):
 
-        self.assertRaisesMessage(
-            ConsumerError,
-            "File not found",
-            self.consumer.try_consume_file,
-            "non-existing-file",
-        )
+        with self.assertRaisesMessage(ConsumerError, "File not found"):
+            Consumer("non-existing-file").try_consume_file()
 
         self._assert_first_last_send_progress(last_status="FAILED")
 
     def testDuplicates1(self):
-        self.consumer.try_consume_file(self.get_test_file())
+        Consumer(self.get_test_file()).try_consume_file()
 
-        self.assertRaisesMessage(
-            ConsumerError,
-            "It is a duplicate",
-            self.consumer.try_consume_file,
-            self.get_test_file(),
-        )
+        with self.assertRaisesMessage(ConsumerError, "It is a duplicate"):
+            Consumer(self.get_test_file()).try_consume_file()
 
         self._assert_first_last_send_progress(last_status="FAILED")
 
     def testDuplicates2(self):
-        self.consumer.try_consume_file(self.get_test_file())
+        Consumer(self.get_test_file()).try_consume_file()
 
-        self.assertRaisesMessage(
-            ConsumerError,
-            "It is a duplicate",
-            self.consumer.try_consume_file,
-            self.get_test_archive_file(),
-        )
+        with self.assertRaisesMessage(ConsumerError, "It is a duplicate"):
+            Consumer(self.get_test_archive_file()).try_consume_file()
 
         self._assert_first_last_send_progress(last_status="FAILED")
 
     def testDuplicates3(self):
-        self.consumer.try_consume_file(self.get_test_archive_file())
-        self.consumer.try_consume_file(self.get_test_file())
+
+        Consumer(self.get_test_archive_file()).try_consume_file()
+
+        Consumer(self.get_test_file()).try_consume_file()
 
     @mock.patch("documents.parsers.document_consumer_declaration.send")
     def testNoParsers(self, m):
         m.return_value = []
 
-        self.assertRaisesMessage(
+        with self.assertRaisesMessage(
             ConsumerError,
             "sample.pdf: Unsupported mime type application/pdf",
-            self.consumer.try_consume_file,
-            self.get_test_file(),
-        )
+        ):
+            Consumer(self.get_test_file()).try_consume_file()
 
         self._assert_first_last_send_progress(last_status="FAILED")
 
@@ -512,12 +503,11 @@ class TestConsumer(DirectoriesMixin, TestCase):
             ),
         ]
 
-        self.assertRaisesMessage(
+        with self.assertRaisesMessage(
             ConsumerError,
             "sample.pdf: Error while consuming document sample.pdf: Does not compute.",
-            self.consumer.try_consume_file,
-            self.get_test_file(),
-        )
+        ):
+            Consumer(self.get_test_file()).try_consume_file()
 
         self._assert_first_last_send_progress(last_status="FAILED")
 
@@ -526,17 +516,16 @@ class TestConsumer(DirectoriesMixin, TestCase):
         filename = self.get_test_file()
         m.side_effect = OSError("NO.")
 
-        self.assertRaisesMessage(
+        with self.assertRaisesMessage(
             ConsumerError,
             "sample.pdf: The following error occurred while consuming sample.pdf: NO.",
-            self.consumer.try_consume_file,
-            filename,
-        )
+        ):
+            Consumer(self.get_test_file()).try_consume_file()
 
         self._assert_first_last_send_progress(last_status="FAILED")
 
         # file not deleted
-        self.assertTrue(os.path.isfile(filename))
+        self.assertTrue(os.path.isfile(filename.path))
 
         # Database empty
         self.assertEqual(len(Document.objects.all()), 0)
@@ -544,8 +533,10 @@ class TestConsumer(DirectoriesMixin, TestCase):
     @override_settings(FILENAME_FORMAT="{correspondent}/{title}")
     def testFilenameHandling(self):
         filename = self.get_test_file()
+        override_title = "new docs"
+        filename.overrides.title = override_title
 
-        document = self.consumer.try_consume_file(filename, override_title="new docs")
+        document = Consumer(filename).try_consume_file()
 
         self.assertEqual(document.title, "new docs")
         self.assertEqual(document.filename, "none/new docs.pdf")
@@ -567,10 +558,12 @@ class TestConsumer(DirectoriesMixin, TestCase):
         m.side_effect = lambda f, archive_filename=False: get_filename()
 
         filename = self.get_test_file()
+        override_title = "new docs"
+        filename.overrides.title = override_title
 
         Tag.objects.create(name="test", is_inbox_tag=True)
 
-        document = self.consumer.try_consume_file(filename, override_title="new docs")
+        document = Consumer(filename).try_consume_file()
 
         self.assertEqual(document.title, "new docs")
         self.assertIsNotNone(os.path.isfile(document.title))
@@ -591,7 +584,7 @@ class TestConsumer(DirectoriesMixin, TestCase):
         m.return_value.predict_document_type.return_value = dtype.pk
         m.return_value.predict_tags.return_value = [t1.pk]
 
-        document = self.consumer.try_consume_file(self.get_test_file())
+        document = Consumer(self.get_test_file()).try_consume_file()
 
         self.assertEqual(document.correspondent, correspondent)
         self.assertEqual(document.document_type, dtype)
@@ -603,13 +596,15 @@ class TestConsumer(DirectoriesMixin, TestCase):
     @override_settings(CONSUMER_DELETE_DUPLICATES=True)
     def test_delete_duplicate(self):
         dst = self.get_test_file()
-        self.assertTrue(os.path.isfile(dst))
-        doc = self.consumer.try_consume_file(dst)
+
+        self.assertTrue(os.path.isfile(dst.path))
+
+        document = Consumer(dst).try_consume_file()
 
         self._assert_first_last_send_progress()
 
         self.assertFalse(os.path.isfile(dst))
-        self.assertIsNotNone(doc)
+        self.assertIsNotNone(document)
 
         self._send_progress.reset_mock()
 

@@ -10,6 +10,7 @@ from django.core.management import call_command
 from django.core.management import CommandError
 from django.test import override_settings
 from django.test import TransactionTestCase
+from documents.consumer import ConsumeDocument
 from documents.consumer import ConsumerError
 from documents.management.commands import document_consumer
 from documents.models import Tag
@@ -76,8 +77,9 @@ class ConsumerMixin:
 
     # A bogus async_task that will simply check the file for
     # completeness and raise an exception otherwise.
-    def bogus_task(self, filename, **kwargs):
-        eq = filecmp.cmp(filename, self.sample_file, shallow=False)
+    def bogus_task(self, doc_info_dict):
+        doc_info = ConsumeDocument.from_dict(doc_info_dict)
+        eq = filecmp.cmp(doc_info.path, self.sample_file, shallow=False)
         if not eq:
             print("Consumed an INVALID file.")
             raise ConsumerError("Incomplete File READ FAILED")
@@ -114,8 +116,10 @@ class TestConsumer(DirectoriesMixin, ConsumerMixin, TransactionTestCase):
 
         self.task_mock.assert_called_once()
 
-        args, kwargs = self.task_mock.call_args
-        self.assertEqual(args[0], f)
+        args, _ = self.task_mock.call_args
+        doc_info = ConsumeDocument.from_dict(args[0])
+
+        self.assertEqual(str(doc_info.path), f)
 
     def test_consume_file_invalid_ext(self):
         self.t_start()
@@ -134,8 +138,10 @@ class TestConsumer(DirectoriesMixin, ConsumerMixin, TransactionTestCase):
         self.t_start()
         self.task_mock.assert_called_once()
 
-        args, kwargs = self.task_mock.call_args
-        self.assertEqual(args[0], f)
+        args, _ = self.task_mock.call_args
+        doc_info = ConsumeDocument.from_dict(args[0])
+
+        self.assertEqual(str(doc_info.path), f)
 
     @mock.patch("documents.management.commands.document_consumer.logger.error")
     def test_slow_write_pdf(self, error_logger):
@@ -154,8 +160,10 @@ class TestConsumer(DirectoriesMixin, ConsumerMixin, TransactionTestCase):
 
         self.task_mock.assert_called_once()
 
-        args, kwargs = self.task_mock.call_args
-        self.assertEqual(args[0], fname)
+        args, _ = self.task_mock.call_args
+        doc_info = ConsumeDocument.from_dict(args[0])
+
+        self.assertEqual(str(doc_info.path), fname)
 
     @mock.patch("documents.management.commands.document_consumer.logger.error")
     def test_slow_write_and_move(self, error_logger):
@@ -174,9 +182,12 @@ class TestConsumer(DirectoriesMixin, ConsumerMixin, TransactionTestCase):
 
         self.task_mock.assert_called_once()
 
-        args, kwargs = self.task_mock.call_args
-        self.assertEqual(args[0], fname2)
+        args, _ = self.task_mock.call_args
+        doc_info = ConsumeDocument.from_dict(args[0])
 
+        self.assertEqual(str(doc_info.path), fname2)
+
+        print(error_logger.call_args)
         error_logger.assert_not_called()
 
     @mock.patch("documents.management.commands.document_consumer.logger.error")
@@ -192,8 +203,10 @@ class TestConsumer(DirectoriesMixin, ConsumerMixin, TransactionTestCase):
         self.wait_for_task_mock_call()
 
         self.task_mock.assert_called_once()
-        args, kwargs = self.task_mock.call_args
-        self.assertEqual(args[0], fname)
+        args, _ = self.task_mock.call_args
+        doc_info = ConsumeDocument.from_dict(args[0])
+
+        self.assertEqual(str(doc_info.path), fname)
 
         # assert that we have an error logged with this invalid file.
         error_logger.assert_called_once()
@@ -240,9 +253,11 @@ class TestConsumer(DirectoriesMixin, ConsumerMixin, TransactionTestCase):
 
         self.assertEqual(2, self.task_mock.call_count)
 
-        fnames = [
-            os.path.basename(args[0]) for args, _ in self.task_mock.call_args_list
-        ]
+        fnames = []
+        for args, _ in self.task_mock.call_args_list:
+            doc_info = ConsumeDocument.from_dict(args[0])
+            fnames.append(doc_info.path.name)
+
         self.assertCountEqual(fnames, ["my_file.pdf", "my_second_file.pdf"])
 
     def test_is_ignored(self):
@@ -337,13 +352,15 @@ class TestConsumerTags(DirectoriesMixin, ConsumerMixin, TransactionTestCase):
         # Add the pk of the Tag created by _consume()
         tag_ids.append(Tag.objects.get(name=tag_names[1]).pk)
 
-        args, kwargs = self.task_mock.call_args
-        self.assertEqual(args[0], f)
+        args, _ = self.task_mock.call_args
+        doc_info = ConsumeDocument.from_dict(args[0])
+
+        self.assertEqual(str(doc_info.path), f)
 
         # assertCountEqual has a bad name, but test that the first
         # sequence contains the same elements as second, regardless of
         # their order.
-        self.assertCountEqual(kwargs["override_tag_ids"], tag_ids)
+        self.assertCountEqual(doc_info.overrides.tag_ids, tag_ids)
 
     @override_settings(
         CONSUMER_POLLING=1,

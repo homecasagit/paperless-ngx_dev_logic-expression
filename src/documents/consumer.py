@@ -55,6 +55,12 @@ MESSAGE_FINISHED = "finished"
 
 @dataclasses.dataclass
 class DocumentOverrides:
+    """
+    Manages overrides for document fields which normally would
+    be set from content or matching.  All fields default to None,
+    meaning no override is happening
+    """
+
     filename: Optional[str] = None
     title: Optional[str] = None
     correspondent_id: Optional[int] = None
@@ -72,7 +78,7 @@ class DocumentOverrides:
             "created": self.created.isoformat() if self.created else None,
         }
 
-    @classmethod
+    @staticmethod
     def from_dict(data: Dict) -> "DocumentOverrides":
         return DocumentOverrides(
             data["filename"],
@@ -87,15 +93,15 @@ class DocumentOverrides:
 @dataclasses.dataclass
 class ConsumeDocument:
     path: Path
-    mime_type: str = dataclasses.field(init=False)
+    mime_type: str = dataclasses.field(init=False, repr=False)
     overrides: DocumentOverrides = dataclasses.field(default_factory=DocumentOverrides)
 
     def __post_init__(self):
         # Always fully qualify the path first thing
-        self.path = self.path.resolve()
+        self.path = Path(self.path).resolve()
 
         # Get the file type once at init
-        self.mime_type = magic.from_file(self.path)
+        self.mime_type = magic.from_file(self.path, mime=True)
 
     @property
     def checksum(self) -> str:
@@ -107,9 +113,9 @@ class ConsumeDocument:
             "overrides": self.overrides.as_dict(),
         }
 
-    @classmethod
+    @staticmethod
     def from_dict(data: Dict) -> "ConsumeDocument":
-        doc = ConsumeDocument(data["path"])
+        doc = ConsumeDocument(Path(data["path"]))
         doc.overrides = DocumentOverrides.from_dict(data["overrides"])
         return doc
 

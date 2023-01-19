@@ -25,6 +25,7 @@ from django.test import override_settings
 from django.utils import timezone
 from documents import bulk_edit
 from documents import index
+from documents.consumer import ConsumeDocument
 from documents.models import Correspondent
 from documents.models import Document
 from documents.models import DocumentType
@@ -808,14 +809,14 @@ class TestDocumentApi(DirectoriesMixin, APITestCase):
 
         m.assert_called_once()
 
-        args, kwargs = m.call_args
-        file_path = Path(args[0])
-        self.assertEqual(file_path.name, "simple.pdf")
-        self.assertIn(Path(settings.SCRATCH_DIR), file_path.parents)
-        self.assertIsNone(kwargs["override_title"])
-        self.assertIsNone(kwargs["override_correspondent_id"])
-        self.assertIsNone(kwargs["override_document_type_id"])
-        self.assertIsNone(kwargs["override_tag_ids"])
+        args, _ = m.call_args
+        doc_info = ConsumeDocument.from_dict(args[0])
+        self.assertEqual(doc_info.path.name, "simple.pdf")
+        self.assertIn(Path(settings.SCRATCH_DIR), doc_info.path.parents)
+        self.assertIsNone(doc_info.overrides.title)
+        self.assertIsNone(doc_info.overrides.correspondent_id)
+        self.assertIsNone(doc_info.overrides.document_type_id)
+        self.assertIsNone(doc_info.overrides.tag_ids)
 
     @mock.patch("documents.views.consume_file.delay")
     def test_upload_empty_metadata(self, m):
@@ -835,14 +836,14 @@ class TestDocumentApi(DirectoriesMixin, APITestCase):
 
         m.assert_called_once()
 
-        args, kwargs = m.call_args
-        file_path = Path(args[0])
-        self.assertEqual(file_path.name, "simple.pdf")
-        self.assertIn(Path(settings.SCRATCH_DIR), file_path.parents)
-        self.assertIsNone(kwargs["override_title"])
-        self.assertIsNone(kwargs["override_correspondent_id"])
-        self.assertIsNone(kwargs["override_document_type_id"])
-        self.assertIsNone(kwargs["override_tag_ids"])
+        args, _ = m.call_args
+        doc_info = ConsumeDocument.from_dict(args[0])
+        self.assertEqual(doc_info.path.name, "simple.pdf")
+        self.assertIn(Path(settings.SCRATCH_DIR), doc_info.path.parents)
+        self.assertIsNone(doc_info.overrides.title)
+        self.assertIsNone(doc_info.overrides.correspondent_id)
+        self.assertIsNone(doc_info.overrides.document_type_id)
+        self.assertIsNone(doc_info.overrides.tag_ids)
 
     @mock.patch("documents.views.consume_file.delay")
     def test_upload_invalid_form(self, m):
@@ -893,9 +894,10 @@ class TestDocumentApi(DirectoriesMixin, APITestCase):
 
         async_task.assert_called_once()
 
-        args, kwargs = async_task.call_args
+        args, _ = async_task.call_args
+        doc_info = ConsumeDocument.from_dict(args[0])
 
-        self.assertEqual(kwargs["override_title"], "my custom title")
+        self.assertEqual(doc_info.overrides.title, "my custom title")
 
     @mock.patch("documents.views.consume_file.delay")
     def test_upload_with_correspondent(self, async_task):
@@ -915,9 +917,10 @@ class TestDocumentApi(DirectoriesMixin, APITestCase):
 
         async_task.assert_called_once()
 
-        args, kwargs = async_task.call_args
+        args, _ = async_task.call_args
+        doc_info = ConsumeDocument.from_dict(args[0])
 
-        self.assertEqual(kwargs["override_correspondent_id"], c.id)
+        self.assertEqual(doc_info.overrides.correspondent_id, c.id)
 
     @mock.patch("documents.views.consume_file.delay")
     def test_upload_with_invalid_correspondent(self, async_task):
@@ -954,9 +957,10 @@ class TestDocumentApi(DirectoriesMixin, APITestCase):
 
         async_task.assert_called_once()
 
-        args, kwargs = async_task.call_args
+        args, _ = async_task.call_args
+        doc_info = ConsumeDocument.from_dict(args[0])
 
-        self.assertEqual(kwargs["override_document_type_id"], dt.id)
+        self.assertEqual(doc_info.overrides.document_type_id, dt.id)
 
     @mock.patch("documents.views.consume_file.delay")
     def test_upload_with_invalid_document_type(self, async_task):
@@ -994,9 +998,10 @@ class TestDocumentApi(DirectoriesMixin, APITestCase):
 
         async_task.assert_called_once()
 
-        args, kwargs = async_task.call_args
+        args, _ = async_task.call_args
+        doc_info = ConsumeDocument.from_dict(args[0])
 
-        self.assertCountEqual(kwargs["override_tag_ids"], [t1.id, t2.id])
+        self.assertCountEqual(doc_info.overrides.tag_ids, [t1.id, t2.id])
 
     @mock.patch("documents.views.consume_file.delay")
     def test_upload_with_invalid_tags(self, async_task):
@@ -1044,9 +1049,10 @@ class TestDocumentApi(DirectoriesMixin, APITestCase):
 
         async_task.assert_called_once()
 
-        args, kwargs = async_task.call_args
+        args, _ = async_task.call_args
+        doc_info = ConsumeDocument.from_dict(args[0])
 
-        self.assertEqual(kwargs["override_created"], created)
+        self.assertEqual(doc_info.overrides.created, created)
 
     def test_get_metadata(self):
         doc = Document.objects.create(
