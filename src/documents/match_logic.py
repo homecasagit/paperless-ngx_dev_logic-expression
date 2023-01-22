@@ -71,7 +71,7 @@ def regex_query_replace(regex: str, querystring: str, replstring: str) -> str:
     return querystring
 
 
-def complex_match(sourcetext: str, querystring: str) -> bool:
+def logic_match(sourcetext: str, querystring: str) -> bool:
     # This funktion takes a logical expression as querystring.
     # The query could be build using the following operators: [()|&!]
     # all other charactes will be parced as simple text and are matched

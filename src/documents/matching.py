@@ -1,7 +1,7 @@
 import logging
 import re
 
-from documents.match_complex import complex_match
+from documents.match_logic import logic_match
 from documents.models import Correspondent
 from documents.models import DocumentType
 from documents.models import MatchingModel
@@ -166,24 +166,24 @@ def matches(matching_model, document):
         # this is done elsewhere.
         return False
 
-    elif matching_model.matching_algorithm == MatchingModel.MATCH_COMPLEX:
+    elif matching_model.matching_algorithm == MatchingModel.MATCH_LOGIC:
 
         if matching_model.is_insensitive:
             document_content = document_content.lower()
             matching_model.match = matching_model.match.lower()
 
         try:
-            match = complex_match(document_content, matching_model.match)
-        except complex_match.error:
+            match = logic_match(document_content, matching_model.match)
+        except logic_match.error:
             logger.error(
-                f"Error while processing complex match: {matching_model.match}",
+                f"Error while processing logic match: {matching_model.match}",
             )
             return False
         if match:
             log_reason(
                 matching_model,
                 document,
-                "complex match successfully matched the string with the document",
+                "Logic match successfully matched the string with the document",
             )
         return bool(match)
 

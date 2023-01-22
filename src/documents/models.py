@@ -25,18 +25,18 @@ class MatchingModel(models.Model):
     MATCH_ALL = 2
     MATCH_LITERAL = 3
     MATCH_REGEX = 4
+    MATCH_LOGIC = 7
     MATCH_FUZZY = 5
     MATCH_AUTO = 6
-    MATCH_COMPLEX = 7
 
     MATCHING_ALGORITHMS = (
         (MATCH_ANY, _("Any word")),
         (MATCH_ALL, _("All words")),
         (MATCH_LITERAL, _("Exact match")),
         (MATCH_REGEX, _("Regular expression")),
+        (MATCH_LOGIC, _("Logic Espression")),
         (MATCH_FUZZY, _("Fuzzy word")),
         (MATCH_AUTO, _("Automatic")),
-        (MATCH_COMPLEX, _("Logic Espression")),
     )
 
     name = models.CharField(_("name"), max_length=128, unique=True)
